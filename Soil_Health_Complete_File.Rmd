@@ -1,0 +1,278 @@
+---
+title: "Soil Health Index"
+author: "Kelly Aves"
+date: "8/13/2020"
+output: pdf_document
+---
+
+This document is a guide to how I built the soil health model up to this point, and direction for future work.   For this model, I am beginning to explore the relationship between yield and CSR2, two properties that influence the value of land. The idea is to build out an equation that can predict this well, and then add in the influence of soil health. 
+
+```{r setup, include=FALSE}
+
+library(ggplot2)
+library(tidyverse)
+library(stargazer)
+library(kableExtra)
+library(knitr)
+library(plm)
+library(broom)
+library(lmtest)
+knitr::opts_chunk$set(dev = 'pdf', warning = FALSE, message = FALSE)
+setwd("C:/Users/Kelly/Documents/ELPC/Soil Health Index")
+IA_18_19 <- read.csv("iowa_18_19_land_value_yield.csv") #nominal land value 
+  #(average $/acre for the county)
+
+```
+
+setwd("C:/Users/Kelly/Documents/ELPC/Soil Health Index")  
+IA_18_19 <- read.csv("iowa_18_19_land_value_yield.csv")  
+library("tidyverse")    
+library("ggplot2")    
+library("stargazer")    
+library("kableExtra")    
+library("knitr")    
+library("plm")    
+library("broom")    
+library("lmtest")    
+
+
+# A note about the Data
+
+1. For yield Data: Retrieved from this site --> https://quickstats.nass.usda.gov/#F1BE7019-3356-3414-85D9-61D876ED08DE 
+  - How to get the yield data: Select "Survey", "Crops", "Field Crops", "Corn" - this could be any crop of choice, "Yield", "Yield Measured in Bu/acre." Under Location select "County", "Iowa" - or any state of choice, your counties of choice or hold crtl to select all. Lastly select your years. For this analysis, I started with 2018 and 2019, but move on to more historical data to improve the model.  
+
+2. For CSR2 data: Retrieved from this site --> https://www.extension.iastate.edu/soils/sites/www.extension.iastate.edu/files/soils/County%20CSR2%20%28NRCS%29%20Weighted%20Means%20v1.1%2022May2017.pdf   
+This is from the year 2017, and is a weighted mean of the county, however, since CSR2 is a rating based on the inherent qualities of the soils, it is my opinion that this is a value that will remain constant. There is an older model for Iowa called CSR, but now everyone uses the CSR2.    
+
+- CSR2 is the standard used in Iowa, but other states have other indexes listed here: https://granular.ag/blog/understanding-soil-productivity-ratings/ 
+
+3. For the land value data: Retrieved from this site --> https://www.card.iastate.edu/farmland/isu-survey/2019/  and https://www.card.iastate.edu/farmland/downloads/ 
+These are land value appraisal estimates from experts in the industry.   
+
+The excel CSV downloaded from USDA containing the yield data served as a base, then I added in the CSR2 data and land value in new columns. 
+
+# Check the Validity of our Data. 
+
+Apparently, there is an approximate equation to convert CSR2 to yield (Yield = 1.6*CSR2 + 80). 
+Let's see how well our dataset follows this trend. This will tell us whether or not our data is relatively good quality. 
+
+```{r}
+data_quality_check <- IA_18_19 %>%
+  mutate(predicted_yield = ((1.6*CSR2)+80))
+print(t.test(data_quality_check$yield, data_quality_check$predicted_yield))
+```
+Good news, the predicted yield and the yield data from USDA are not significantly different. We will use this as a sign that our data is decent quality.    
+
+# Let's get to the good stuff and do some regressions  
+
+Since we are using panel data (repeated observations over a period of time), we need to use clustered standard errors. If we do not use clustered standard errors, the software will interpret each observation as completely unique, which is incorrect because we are analyzing the same counties over time. More about CSE:  https://blog.theleapjournal.org/2016/06/sophisticated-clustered-standard-errors.html 
+
+First model is to see relationship between yield and land value. 
+```{r include=TRUE, echo = TRUE, results='asis'}
+
+reg1 <- lm(LAND_VALUE ~ yield, data = IA_18_19) #this runs a linear reg model
+stargazer(reg1, type = "latex", title = "Relationship between yield and land value", 
+          header = FALSE, table.placement = "H") #this creates reg table
+
+#cluster standard error to check against normal OLS SE
+pooled_1 <- plm(LAND_VALUE ~ yield, data = IA_18_19,
+                  model = "pooling", 
+                  index= "County",
+                effect = "individual")
+
+pooled_1_SE <- as.data.frame(tidy(coeftest(pooled_1, 
+                                           vcov=vcovHC(pooled_1, 
+                                                       type = "HC0", cluster = "group"))))
+
+stargazer(t(pooled_1_SE), type = "latex", 
+          title = "Relationship between yield and land value, Pooled OLS, Correct SE", 
+          header = FALSE, table.placement = "H")
+
+plot(x = IA_18_19$yield, y = IA_18_19$LAND_VALUE, 
+     xlab = "Yield (bu/acre)", 
+     ylab = "Land Value ($/acre)", main = "Yield against land value (OLS)") 
+#this code is base R for graphing
+abline(reg1, col = "blue") #this trendline is the regression model
+```
+Interpretation of this model: as yield increases by one bushel per acre, the land value increases by $37.48 per acre.   
+
+However, from the ISU report on land value, we know that yield is not the only thing that influence land value.  
+
+Next, let's see the relationship between CSR2 and land value. 
+
+```{r include=TRUE, echo = TRUE, results='asis'}
+reg2 <- lm(LAND_VALUE ~ CSR2, data = IA_18_19)
+stargazer(reg2, type = "latex", title = "Relationship between CSR2 and land value", 
+          header = FALSE, table.placement = "H")
+plot(x = IA_18_19$CSR2, y = IA_18_19$LAND_VALUE, xlab = "CSR2", 
+     ylab = "Land Value ($/acre)", main = "CSR2 against Land Value (OLS)")
+abline(reg2, col = "blue") 
+```
+Interpretation of this model: as CSR2 increases by one point, the land value increases by $96.48 per acre.   
+
+Now, let's include both of these measures into one model, because in real life they are probably interacting to determine the value of land.  
+
+```{r include=TRUE, echo = TRUE, results='asis'}
+reg3 <- lm(LAND_VALUE ~ yield + CSR2, data = IA_18_19)
+stargazer(reg3, type = "latex", title = 
+            "Relationship between yield and CSR2 on land value, OLS", 
+          header = FALSE, table.placement = "H")
+
+
+pooled_2 <- plm(LAND_VALUE ~ yield + CSR2, data = IA_18_19,
+                  model = "pooling", 
+                  index= c("County"),
+                  effect = "individual")
+
+pooled_2_SE <- as.data.frame(tidy(coeftest(pooled_2, 
+                                           vcov=vcovHC(pooled_2, 
+                                                       type = "HC0", cluster = "group"))))
+
+stargazer(t(pooled_2_SE), type = "latex", title = 
+            "Relationship between yield, CSR2 and land value, Pooled OLS Model, Correct SE", 
+          header = FALSE, table.placement = "H")
+```
+Interpretation of this model: The influence on both measures have decreased, but remained statistically significant. This makes sense, because with both yield and CSR2 included they would each have less explanatory power over land value.    
+
+# **At this point, this is a rough estimate of the model:**
+$$Land~Value = -2824.537 + 22.578~Yield + 85.662~CSR2 + \beta_3Soil ~health + \varepsilon$$
+
+Let's check how well our model is at predicting land value for each observation. 
+```{r include=TRUE, echo = TRUE}
+#create new column using the equation for each observation
+check_df <- IA_18_19 %>%
+  mutate(estimate = -2824.537 + 22.578*yield + 85.662*CSR2) 
+print(t.test(check_df$LAND_VALUE, check_df$estimate, paired = FALSE))  
+```
+
+
+Although the t-test shows that the difference in means between the land value data and the estimated land value from the model are not statistically significant, there is likely still a lot of error and imprecision in our model. The next step is to add more observations, which I will do my adding more years of yield and land value data from the same sources as before.   
+
+Before I add more data, more about the model:  
+
+"Soil Health" stands for the index we are trying to create. This is one option to include Soil Health into the model. 
+
+There is also a second option to include Soil Health, which I believe will be easier. The second option is to split our model into two steps:   
+
+  1. Determine Soil Health's influence on yield. This is discussed in Wade et al.'s paper (https://www.nature.com/articles/s41598-020-60987-3#Fig1). More exploration of this research and discussion with the authors I believe will be beneficial. Take the normal yield data from USDA, and scale by a factor appropriate to the practice/soil health indicators. 
+  $$Yield_{improved} = Soil~Health~Factor * Yield_{data}$$
+
+  2.  Use the new "Soil Health Scaled Yield" in a regression model. 
+$$Land~Value = \beta_0 + \beta_1Yield_{improved} + \beta_2CSR2 + \varepsilon$$  
+
+# Add more observations and see if model improves!  
+
+Using the same process as before. Determining an "improvement" can be difficult, but I am judging this by a decrease in standard error for each coefficient and an overall increase in $R^2$. The pooled standard errors, clustered by county, are quite large, so I am hoping this decreases. 
+
+I will not run each variable in a separate regression because that is highly likely not to be the correct relationship.
+
+```{r, include=TRUE, echo = TRUE, results='asis'}
+IA_50_15 <- read.csv("iowa_50_15_land_value_yield.csv") 
+#the land value has been adjusted for inflation using 2015 as baseline 
+
+IA_16_17 <- read.csv("iowa_16_17_land_value_yield.csv") #nominal land value
+
+IA_complete <- rbind(IA_50_15, IA_16_17, IA_18_19)
+
+plot(x = IA_complete$yield, y = IA_complete$LAND_VALUE, xlab = "Yield (bu/acre)", 
+     ylab = "Land Value ($/acre)", main = "Yield against Land Value") 
+#this code is base R for graphing
+abline(lm(LAND_VALUE ~ yield, data = IA_complete), col = "blue")
+```
+
+```{r include=TRUE, echo = TRUE, results='asis'}
+reg4 <- lm(LAND_VALUE ~ yield + CSR2, data = IA_complete)
+stargazer(reg4, type = "latex", 
+          title = "Relationship between yield and CSR2 on land value All years, OLS", 
+          header = FALSE, table.placement = "H")
+
+
+pooled_3 <- plm(LAND_VALUE ~ yield + CSR2, data = IA_complete,
+                  model = "pooling", 
+                  index= c("County"),
+                  effect = "individual")
+
+pooled_3_SE <- as.data.frame(tidy(coeftest(pooled_3, 
+                                           vcov=vcovHC(pooled_3, 
+                                                       type = "HC0", cluster = "group"))))
+
+stargazer(t(pooled_3_SE), type = "latex", 
+          title = "Relationship between yield, CSR2 and land value, Pooled OLS Model All Years, Correct SE", 
+          header = FALSE, table.placement = "H")
+```
+
+As you can see, the pooled OLS model with all of the available observations has a significantly smaller standard error than the complete OLS model. The $R^2$ did decrease when using all years compared to just 2018 and 2019. Because of a visual interpretation of data, I believe exploring a nonlinear model would be beneficial (I do not have the capability to do this). However, I am interpreting this to be the most precise model given the available data and my statistical skill set. 
+
+Let's check again now with more observations how well our model is at predicting land value for each observation. From the t-test below, we can see that there are no statistically significant differences between the land value data from the USDA and our predicted land value from the model. 
+
+```{r include=TRUE, echo = TRUE}
+#create new column using the equation for each observation
+check_df_2 <- IA_complete %>%
+  mutate(estimate = -2724.618 + 26.281*yield + 47.951*CSR2) 
+print(t.test(check_df_2$LAND_VALUE, check_df$estimate, paired = FALSE)) #see if differences are sig.
+```
+
+**The final equation for this preliminary data exploration is as given:**
+
+$$Land~Value = -2724.618 + 26.281~Yield + 47.951~CSR2 + \beta_3Soil ~health + \varepsilon$$
+ 
+
+# Graphing
+
+Ideally, a graph could be provided by the model with future land value projections, depending on the practices that impact soil health. Let's start by looking at our historical data. We can graph both the land value data from ISU and our predicted land value from the model. Let's use Butler County as an example. 
+
+```{r include=TRUE, echo = TRUE, results='asis'}
+write.csv(check_df_2, "IA_complete.csv") #saving my final dataframe into Excel 
+#so others can use the data
+
+butler_plot <- check_df_2 %>%
+  filter(County == "BUTLER")
+
+land_value_color <- "333CCC"
+ggplot(data = butler_plot, aes(x = as.factor(Year))) +
+  geom_line(aes(y = LAND_VALUE, group = "County", color ="b"))+
+  geom_line(aes(y = estimate, group = "County", color = "r")) +
+  labs(x = "Year", y = "Land Value ($/acre)", title = "Butler Land Value over time") +
+  scale_color_manual(name = "Value Type", values = c("b" = "black", "r" = "red"), 
+                     labels = c("Historical", "Estimate")) +
+  theme(axis.text.x = element_text(size=7, angle=90)) + 
+  theme(axis.text.x = element_text(vjust = 0)) +
+  theme(axis.text.x = element_text(hjust = 0.5))
+```
+Looking at this graph, there is more variability in actual land value than predicted by our model over the long term. This implies we need to add another covariate. Based on the timing of the swings, notable around 2009 - it appears that farming incentives perhaps should be incorporated. The model is also more sensitive to weather than actual land value appraisals are - as evidenced by the dip in 2012 (low yields from the drought year). This implies that precipitation and weather should be added into the model as controls to correct for short blips in changes in yield that don't have a long term impact on land value. 
+
+How does this visual analysis of the model hold when averaging across all counties?
+
+```{r include=TRUE, echo = TRUE, results='asis'}
+counties_averaged <- check_df_2 %>%
+  group_by(Year) %>%
+  summarise(value = mean(LAND_VALUE), estimate = mean(estimate))
+ggplot(data = counties_averaged, aes(x = as.factor(Year))) +
+  geom_line(aes(y = value, group = "value", color ="b"))+
+  geom_line(aes(y = estimate, group = "estimate", color = "r")) +
+  labs(x = "Year", y = "Land Value ($/acre)", title = "County Averaged Land Value over time") +
+  scale_color_manual(name = "Value Type", values = c("b" = "black", "r" = "red"), 
+                     labels = c("Historical", "Estimate")) +
+  theme(axis.text.x = element_text(size=7, angle=90)) + 
+  theme(axis.text.x = element_text(vjust = 0)) +
+  theme(axis.text.x = element_text(hjust = 0.5))
+
+```
+When averaging all of the counties, the trend holds from what we saw in an individual county. What I forsee for graphing is combining the historical data up to the current year which you could do for the individual county, then using then model to predict the next few years - once soil health is also incorporated. The CSR2 is known, so that would be easy to input, but you would have to estimate yield and any other covariates you decide to incorporate into the model.  
+
+# Further Work 
+
+- The epsilons in the above equations serve as an error term. Many other factors go into determining land value price, so exploration of additional variables and data to include in the model may make the model more precise. Based on the ISU land value research, other factors to take into consideration are comodity prices, weather, land scarcity. However, some of these variables are impossible to measure or vary from year to year (such as "feelings about the future of ag"), so may just have to be background noise in our model that hopefully many observations can provide enough power to overcome that error.    
+
+- Explore Fixed Effects models. I tried using FE for county to control for difference in survey/opinions by county on land value appraisals, but it seemed to overcontrol and gave a negative coefficient for yield.  Different counties experience different weather, so I think to do a FE model to control for county unit FE, you would need to add weather covariates (variable for rainfall and av. temp in each county). When doing the county fixed effect, you want to control for different factors in a county that are time-invariant and obviously weather is a time-variant variable that when I tried to use a county FE I was adding lots of error.  
+
+- Determine how we want to measure "Soil Health." A literature review and recommendations on this will be provided, but more advanced statistical analysis and consultation with experts will likely be needed to do this. It is easier to determine how one soil property can influence yield, but determining how to combine mutiple soil characteristics into a holistic measure of health and how that influences yield is more difficult. Wade et al. does this in their 2020 paper; it might be a good idea to collaborate with them. 
+
+- This model was devloped for fields growing corn in Iowa. To expand the model, this likely needs to be repeated using different crop types and in each state. Under the data section, there is a link that lists the equivalent measures to CSR2 for different Midwestern States. 
+
+- Consider how climate change will influence land values - will shifts in growing zones and weather patterns make certain land less or more valuable? Will all agricultural land become more valuable due to desertification? Etc... This consideration should be given more weight depending on how far in the future you want this model to project. 
+
+
+# Conclusions 
+
+This is hopefully a good starting point for this project! My statistical analyses are quite simple, but provide a framework to start thinking about how to model this project in a logical way. With more research, covariates can be added and subtracted from the model as one sees fit. Lastly, how the Soil Health measure is incorporated into the model can be done in numerous ways, depending on the limitiations of the data. 
