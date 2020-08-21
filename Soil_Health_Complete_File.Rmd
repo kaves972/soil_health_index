@@ -1,3 +1,4 @@
+RMD files are R markdown files - you can write your code and text in Rstudio and can have the output be a pdf
 ---
 title: "Soil Health Index"
 author: "Kelly Aves"
